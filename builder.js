@@ -1,6 +1,5 @@
 // Dependencies
 const DButils = require('./utils');
-const WebDB = require('./webdb');
 
 function QueryBuilder() {
 
@@ -95,7 +94,7 @@ QueryBuilder.prototype.make = function(rule, arg) {
 	if (arg)
 		self.findarg = arg;
 
-	self.findrule = new Function('item', 'arg', 'return ' + rule);
+	self.findrule = new Function('item', 'arg', 'try{return ' + rule + '}catch(e){}');
 	return self;
 };
 

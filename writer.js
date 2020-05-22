@@ -172,9 +172,6 @@ function Writer(database) {
 			}
 		}
 
-		// @TODO: process new uploaded files
-		// t.files
-
 		if (t.files.length)
 			t.savefiles(modified);
 		else if (modified)
@@ -203,7 +200,11 @@ function Writer(database) {
 
 			for (var j = 0; j < filters.length; j++) {
 				var filter = filters[j];
-				filter.builder.modifyrule(doc, filter.builder.modifyarg);
+				try {
+					filter.builder.modifyrule(doc, filter.builder.modifyarg);
+				} catch (e) {
+					filter.builder.error = e;
+				}
 			}
 
 			data.data = t.db.makedata(t.db.schema, doc);
@@ -246,8 +247,13 @@ Writer.prototype.savefiles = function(modified) {
 			builder.filename.width = meta.width;
 			builder.filename.height = meta.height;
 			builder.filename.size = meta.size;
-			if (builder.modifyrule)
-				builder.modifyrule(builder.newbie, builder.modifyarg, builder.filename);
+			if (builder.modifyrule) {
+				try {
+					builder.modifyrule(builder.newbie, builder.modifyarg, builder.filename);
+				} catch (e) {
+					builder.error = e;
+				}
+			}
 			filter.data = self.db.makedata(self.db.schema, builder.newbie);
 			filter.storage = builder.filename.storage;
 			next();
