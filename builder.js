@@ -13,7 +13,7 @@ function QueryBuilder() {
 	t.$take = 1000;
 	t.$skip = 0;
 	t.$storage = false;
-	t.$storagetype = 1;
+	t.$storagetype = 0;
 
 	// t.$fields
 	// t.$sortname

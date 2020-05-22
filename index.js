@@ -67,6 +67,7 @@ function Database(filename) {
 	t.pendingalter = null;
 	t.pendingclean = null;
 	t.pendingclear = null;
+	t.pause = false;
 	t.readers = [new Reader(t), new Reader(t)];
 	t.size = 0;
 	t.fd = 0;
@@ -90,12 +91,15 @@ function Database(filename) {
 
 		t.nextforceid = null;
 
-		if (t.pendingalter) {
+		if (t.pendingpause) {
+			if (!t.pending)
+				t.pendingpause();
+			return;
+		}
 
-			// updating of schema
+		if (t.pendingalter) {
 			if (!t.pending)
 				t.alterforce(t.pendingalter);
-
 			return;
 		}
 
@@ -150,6 +154,22 @@ function parsefilename(filename) {
 	return { name: name, filename: filename, ext: ext, storage: IMAGES[ext] ? H.STORAGE_IMAGE : H.STORAGE_BINARY };
 }
 
+Database.prototype.pause = function(callback) {
+	var self = this;
+
+	self.pendingpause = function() {
+		self.pending++;
+		callback(function() {
+			self.pendingpause = null;
+			self.pending--;
+			self.next();
+		});
+	};
+
+	self.next();
+	return self;
+};
+
 Database.prototype.close = function(callback) {
 
 	var self = this;
@@ -162,7 +182,6 @@ Database.prototype.close = function(callback) {
 			else
 				self.close(callback);
 		};
-
 		close(self, callback);
 	} else {
 		for (var i = 0; i < self.readers.length; i++)
@@ -207,6 +226,16 @@ Database.prototype.insert = function(doc, filename) {
 	builder.type = 2;
 	builder.newbie = doc;
 	builder.filename = filename ? parsefilename(filename) : null;
+
+	var keys = Object.keys(doc);
+	for (var i = 0; i < keys.length; i++) {
+		var key = keys[i];
+		if (key !== 'id' && !self.schemameta[key]) {
+			builder.$storagetype = 1;
+			break;
+		}
+	}
+
 	self.pendingwriter.push(builder);
 	self.op.push('write');
 	self.next();
@@ -742,8 +771,6 @@ Database.prototype.clearforce = function() {
 	self.ready = false;
 	self.pending++;
 
-	var quota = (H.PAGESIZE - 1) / H.BLOCKSIZE;
-
 	// Schema items count
 	buffer.writeInt8(self.schema.length, 10);
 
@@ -776,7 +803,6 @@ Database.prototype.clearforce = function() {
 
 	var filenametmp = self.filename + '-tmp';
 	var offset = 0;
-	var pending = [];
 
 	Fs.open(filenametmp, 'w', function(err, fd) {
 		Fs.write(fd, buffer, 0, buffer.length, 0, function(err, size) {
@@ -790,37 +816,15 @@ Database.prototype.clearforce = function() {
 				return;
 			}
 
-			var flush = function(filter, next) {
-
-				var buffer = Buffer.alloc(H.PAGESIZE);
-				for (var i = 0; i < filter.length; i++) {
-					var item = filter[i];
-					self.writer.make(buffer, i * H.BLOCKSIZE, item);
-				}
-
-				// Reset
-				filter.length = 0;
-
-				Fs.write(fd, buffer, 0, buffer.length, offset, function(err, size) {
-					if (err) {
-						self.pending--;
-						self.pendingclear && self.pendingclear(err);
-						self.pendingclear = null;
-						next = null;
-					} else {
-						offset += size;
-						next();
-					}
-				});
-			};
-
 			offset += size;
 			streamer(self, 0, function(filter, next) {
 
 				var remove = [];
 
-				for (var i = 0; i < filter.length; i++)
+				for (var i = 0; i < filter.length; i++) {
+					var item = filter[i];
 					item.storage && remove.push(self.makefilename(item.id));
+				}
 
 				// Remove files
 				if (remove.length)

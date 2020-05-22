@@ -4,7 +4,7 @@ const Database = require('./index').Database;
 // var reader = new Reader();
 // var buffer = Buffer.alloc(PAGESIZE);
 
-var database = new Database('test.db');
+var database = new Database('products.db');
 // database.pendingreader.push(null);
 
 //database.modify({}).make('doc.id=="159234047ia61b"').modify('doc.kokot=true;doc.price=100');
@@ -23,9 +23,9 @@ setTimeout(function() {
 	// 160706001ts61b a 160706001aa61b
 
 	// database.remove().make('true').callback(console.log);
-	// database.clean();
+	// database.clear(console.log);
 
-	// database.find().make('true').take(5).sort('priceaas').callback(console.log);
+	database.find().make('true').fields('*').take(5).sort('price').callback(console.log);
 	// setTimeout(() => database.close(console.log), 2);
 	// setTimeout(() => database.find().make('true').take(5).sort('priceaas').callback(console.log), 1000);
 	// database.find().make('true').scalar('arg.max=Math.max(arg.max||0,item.price);arg.min=Math.min(arg.min||100,item.price)', {}).callback(console.log);
@@ -40,8 +40,8 @@ setTimeout(function() {
 	// database.insert({ id: UID(), name: GUID(30), price: U.random(10, 0.1), date: new Date(), body: GUID(50) }, '/Users/petersirka/Desktop/logo.png');
 	// database.insert({ id: UID(), name: GUID(30), price: U.random(10, 0.1), date: new Date(), body: GUID(50) });
 
-	// for (var i = 0; i < 10000; i++)
-	// 	database.insert({ id: UID(), name: GUID(30), price: U.random(10, 0.1), date: new Date(), body: GUID(50) });
+	// for (var i = 0; i < 1000000; i++)
+	// 	database.insert({ id: UID(), name: GUID(30), price: U.random(10, 0.1), date: new Date() });
 
 }, 200);
 
