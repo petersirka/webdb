@@ -83,9 +83,14 @@ QueryBuilder.prototype.skip = function(skip) {
 };
 
 QueryBuilder.prototype.sort = function(field, desc) {
-	this.$sortname = field;
-	this.$sortasc = desc !== true;
-	return this;
+	var self = this;
+
+	if (self.db.schemameta[field]) {
+		self.$sortname = field;
+		self.$sortasc = desc !== true;
+	}
+
+	return self;
 };
 
 QueryBuilder.prototype.make = function(rule, arg) {

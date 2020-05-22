@@ -22,7 +22,12 @@ var database = new Database('test.db');
 setTimeout(function() {
 	// 160706001ts61b a 160706001aa61b
 
-	database.find().make('true').take(5).callback(console.log);
+	// database.remove().make('true').callback(console.log);
+	// database.clean();
+
+	// database.find().make('true').take(5).sort('priceaas').callback(console.log);
+	// setTimeout(() => database.close(console.log), 2);
+	// setTimeout(() => database.find().make('true').take(5).sort('priceaas').callback(console.log), 1000);
 	// database.find().make('true').scalar('arg.max=Math.max(arg.max||0,item.price);arg.min=Math.min(arg.min||100,item.price)', {}).callback(console.log);
 	// database.find().make('true').scalar('arg.max=Math.max(arg.max||0,item.price);arg.min=Math.min(arg.min||100,item.price)', {}).callback(console.log);
 

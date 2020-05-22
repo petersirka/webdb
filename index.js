@@ -61,9 +61,12 @@ function Database(filename) {
 	t.filename = filename;
 	t.name = Path.basename(filename).replace(/\..*?$/, '');
 
+	t.op = [];
 	t.pendingreader = [];
 	t.pendingwriter = [];
 	t.pendingalter = null;
+	t.pendingclean = null;
+	t.pendingclear = null;
 	t.readers = [new Reader(t), new Reader(t)];
 	t.size = 0;
 	t.fd = 0;
@@ -93,6 +96,18 @@ function Database(filename) {
 			if (!t.pending)
 				t.alterforce(t.pendingalter);
 
+			return;
+		}
+
+		if (t.pendingclean) {
+			if (!t.pending)
+				t.cleanforce();
+			return;
+		}
+
+		if (t.pendingclear) {
+			if (!t.pending)
+				t.clearforce();
 			return;
 		}
 
@@ -135,6 +150,43 @@ function parsefilename(filename) {
 	return { name: name, filename: filename, ext: ext, storage: IMAGES[ext] ? H.STORAGE_IMAGE : H.STORAGE_BINARY };
 }
 
+Database.prototype.close = function(callback) {
+
+	var self = this;
+	self.ready = false;
+
+	if (self.pending > 0) {
+		var close = function(self, callback) {
+			if (self.pending > 0)
+				setTimeout(close, 200, self, callback);
+			else
+				self.close(callback);
+		};
+
+		close(self, callback);
+	} else {
+		for (var i = 0; i < self.readers.length; i++)
+			Fs.close(self.readers[i].fd, NOOP);
+		Fs.close(self.fd, callback || NOOP);
+	}
+
+	return self;
+};
+
+Database.prototype.clean = function(callback) {
+	var self = this;
+	self.pendingclean = callback || NOOP;
+	self.next();
+	return self;
+};
+
+Database.prototype.clear = function(callback) {
+	var self = this;
+	self.pendingclear = callback || NOOP;
+	self.next();
+	return self;
+};
+
 Database.prototype.modify = function(doc, filename) {
 	var self = this;
 	var builder = new QueryBuilder();
@@ -143,6 +195,7 @@ Database.prototype.modify = function(doc, filename) {
 	builder.newbie = doc;
 	builder.filename = filename ? parsefilename(filename) : null;
 	self.pendingwriter.push(builder);
+	self.op.push('write');
 	self.next();
 	return builder;
 };
@@ -155,6 +208,7 @@ Database.prototype.insert = function(doc, filename) {
 	builder.newbie = doc;
 	builder.filename = filename ? parsefilename(filename) : null;
 	self.pendingwriter.push(builder);
+	self.op.push('write');
 	self.next();
 	return builder;
 };
@@ -165,6 +219,7 @@ Database.prototype.remove = function() {
 	builder.db = self;
 	builder.type = 3;
 	self.pendingwriter.push(builder);
+	self.op.push('write');
 	self.next();
 	return builder;
 };
@@ -174,6 +229,7 @@ Database.prototype.find = function() {
 	var builder = new QueryBuilder();
 	builder.db = self;
 	self.pendingreader.push(builder);
+	self.op.push('read');
 	self.next();
 	return builder;
 };
@@ -512,6 +568,283 @@ Database.prototype.alterforce = function(schema) {
 								self.open();
 
 							self.pendingaltercallback && self.pendingaltercallback(err);
+						});
+					});
+				});
+			});
+		});
+	});
+};
+
+Database.prototype.cleanforce = function() {
+
+	var buffer = Buffer.alloc(H.DATAOFFSET);
+	var self = this;
+	var offset = 11;
+	var maxlength = 27;
+	var size = 30;
+
+	buffer.write('WebDB', 0, 'ascii');
+	buffer.writeInt16BE(1, 6);
+
+	self.ready = false;
+	self.pending++;
+
+	var quota = (H.PAGESIZE - 1) / H.BLOCKSIZE;
+
+	// Schema items count
+	buffer.writeInt8(self.schema.length, 10);
+
+	// Max. 100 fields
+	for (var i = 0; i < self.schema.length; i++) {
+
+		var item = self.schema[i];
+		var type = H.TYPE_STRING;
+
+		switch (item.type) {
+			case 'number':
+				type = H.TYPE_NUMBER;
+				break;
+			case 'boolean':
+				type = H.TYPE_BOOLEAN;
+				break;
+			case 'date':
+				type = H.TYPE_DATE;
+				break;
+		}
+
+		// 30 bytes
+		var name = item.name.length > maxlength ? item.name.substring(0, maxlength) : item.name;
+		buffer.writeInt8(type, offset);                     // Type
+		buffer.writeInt8(item.sortindex || 0, offset + 1);  // Sortindex
+		buffer.writeInt8(name.length, offset + 2);          // Name length
+		buffer.write(name, offset + 3, 'ascii');            // Name
+		offset += size;
+	}
+
+	var filenametmp = self.filename + '-tmp';
+	var offset = 0;
+	var pending = [];
+
+	Fs.open(filenametmp, 'w', function(err, fd) {
+		Fs.write(fd, buffer, 0, buffer.length, 0, function(err, size) {
+
+			if (err) {
+				self.pending--;
+				self.pendingclean && self.pendingclean(err);
+				self.pendingclean = null;
+				self.ready = true;
+				self.next();
+				return;
+			}
+
+			var flush = function(filter, next) {
+
+				var buffer = Buffer.alloc(H.PAGESIZE);
+				for (var i = 0; i < filter.length; i++) {
+					var item = filter[i];
+					self.writer.make(buffer, i * H.BLOCKSIZE, item);
+				}
+
+				// Reset
+				filter.length = 0;
+
+				Fs.write(fd, buffer, 0, buffer.length, offset, function(err, size) {
+					if (err) {
+						self.pending--;
+						self.pendingclean && self.pendingclean(err);
+						self.pendingclean = null;
+						next = null;
+					} else {
+						offset += size;
+						next();
+					}
+				});
+			};
+
+			offset += size;
+			streamer(self, 0, function(filter, next) {
+
+				var remove = [];
+
+				for (var i = 0; i < filter.length; i++) {
+					var item = filter[i];
+					if (item.type === H.FLAG_RECORD)
+						pending.push(item);
+					else if (item.storage)
+						remove.push(self.makefilename(item.id));
+				}
+
+				if (remove.length) {
+					// Remove files
+					remove.wait(function(filename, next) {
+						Fs.unlink(filename, next);
+					}, function() {
+						if (pending.length === quota)
+							flush(pending, next);
+						else
+							next();
+					});
+				} else {
+					if (pending.length === quota)
+						flush(pending, next);
+					else
+						next();
+				}
+
+			}, function() {
+
+				var done = function() {
+					Fs.close(fd, function() {
+						Fs.close(self.fd, function() {
+							// Rewrite DB
+							Fs.rename(filenametmp, self.filename, function(err) {
+
+								// DONE
+								self.pending--;
+
+								if (err) {
+									self.ready = true;
+									self.next();
+								} else
+									self.open();
+
+								self.pendingclean && self.pendingclean(err);
+								self.pendingclean = null;
+							});
+						});
+					});
+				};
+
+				if (pending.length && pending.length !== 4) {
+					var diff = quota - pending.length;
+					for (var i = 0; i < diff; i++)
+						pending.push({ type: H.FLAG_EMPTY, replication: 0, storage: 0 });
+					flush(pending, done);
+				} else
+					done();
+			});
+		});
+	});
+};
+
+Database.prototype.clearforce = function() {
+
+	var buffer = Buffer.alloc(H.DATAOFFSET);
+	var self = this;
+	var offset = 11;
+	var maxlength = 27;
+	var size = 30;
+
+	buffer.write('WebDB', 0, 'ascii');
+	buffer.writeInt16BE(1, 6);
+
+	self.ready = false;
+	self.pending++;
+
+	var quota = (H.PAGESIZE - 1) / H.BLOCKSIZE;
+
+	// Schema items count
+	buffer.writeInt8(self.schema.length, 10);
+
+	// Max. 100 fields
+	for (var i = 0; i < self.schema.length; i++) {
+
+		var item = self.schema[i];
+		var type = H.TYPE_STRING;
+
+		switch (item.type) {
+			case 'number':
+				type = H.TYPE_NUMBER;
+				break;
+			case 'boolean':
+				type = H.TYPE_BOOLEAN;
+				break;
+			case 'date':
+				type = H.TYPE_DATE;
+				break;
+		}
+
+		// 30 bytes
+		var name = item.name.length > maxlength ? item.name.substring(0, maxlength) : item.name;
+		buffer.writeInt8(type, offset);                     // Type
+		buffer.writeInt8(item.sortindex || 0, offset + 1);  // Sortindex
+		buffer.writeInt8(name.length, offset + 2);          // Name length
+		buffer.write(name, offset + 3, 'ascii');            // Name
+		offset += size;
+	}
+
+	var filenametmp = self.filename + '-tmp';
+	var offset = 0;
+	var pending = [];
+
+	Fs.open(filenametmp, 'w', function(err, fd) {
+		Fs.write(fd, buffer, 0, buffer.length, 0, function(err, size) {
+
+			if (err) {
+				self.pending--;
+				self.pendingclear && self.pendingclear(err);
+				self.pendingclear = null;
+				self.ready = true;
+				self.next();
+				return;
+			}
+
+			var flush = function(filter, next) {
+
+				var buffer = Buffer.alloc(H.PAGESIZE);
+				for (var i = 0; i < filter.length; i++) {
+					var item = filter[i];
+					self.writer.make(buffer, i * H.BLOCKSIZE, item);
+				}
+
+				// Reset
+				filter.length = 0;
+
+				Fs.write(fd, buffer, 0, buffer.length, offset, function(err, size) {
+					if (err) {
+						self.pending--;
+						self.pendingclear && self.pendingclear(err);
+						self.pendingclear = null;
+						next = null;
+					} else {
+						offset += size;
+						next();
+					}
+				});
+			};
+
+			offset += size;
+			streamer(self, 0, function(filter, next) {
+
+				var remove = [];
+
+				for (var i = 0; i < filter.length; i++)
+					item.storage && remove.push(self.makefilename(item.id));
+
+				// Remove files
+				if (remove.length)
+					remove.wait((filename, next) => Fs.unlink(filename, next), next);
+				else
+					next();
+
+			}, function() {
+				Fs.close(fd, function() {
+					Fs.close(self.fd, function() {
+						// Rewrite DB
+						Fs.rename(filenametmp, self.filename, function(err) {
+
+							// DONE
+							self.pending--;
+
+							if (err) {
+								self.ready = true;
+								self.next();
+							} else
+								self.open();
+
+							self.pendingclear && self.pendingclear(err);
+							self.pendingclear = null;
 						});
 					});
 				});
