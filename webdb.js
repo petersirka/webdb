@@ -43,13 +43,14 @@ const TYPE_DATE = 4;
 // TYPE (BYTE),ID (50 bytes),FILTERDATA (max. 3 kb)
 
 function QueryBuilder() {
+
 	var t = this;
 	t.items = [];
 	t.count = 0;
 	t.counter = 0;
 	t.scanned = 0;
-	t.findparams = EMPTYOBJECT;
-	t.modifyparams = EMPTYOBJECT;
+	t.findarg = EMPTYOBJECT;
+	t.modifyarg = EMPTYOBJECT;
 	t.$take = 1000;
 	t.$skip = 0;
 	t.$storage = false;
@@ -128,23 +129,37 @@ QueryBuilder.prototype.sort = function(field, desc) {
 	return this;
 };
 
-QueryBuilder.prototype.make = function(rule, params) {
+QueryBuilder.prototype.make = function(rule, arg) {
 	var self = this;
 
-	if (params)
-		self.findparams = params;
+	if (arg)
+		self.findarg = arg;
 
-	self.findrule = new Function('doc', 'params', 'return ' + rule);
+	self.findrule = new Function('item', 'arg', 'return ' + rule);
 	return self;
 };
 
-QueryBuilder.prototype.modify = function(rule, params) {
+function modifyrule(doc) {
+	return doc;
+}
+
+QueryBuilder.prototype.modify = function(rule, arg) {
 	var self = this;
 
-	if (params)
-		self.modifyparams = params;
+	if (arg)
+		self.modifyarg = arg;
 
-	self.modifyrule = new Function('doc', 'params', 'file', rule);
+	self.modifyrule = rule ? new Function('item', 'arg', 'file', rule) : modifyrule;
+	return self;
+};
+
+QueryBuilder.prototype.scalar = function(rule, arg) {
+	var self = this;
+
+	if (arg)
+		self.scalararg = arg;
+
+	self.scalarrule = new Function('item', 'arg', rule);
 	return self;
 };
 
@@ -167,19 +182,20 @@ function Database(filename) {
 	t.readers = [new Reader(t), new Reader(t)];
 	t.size = 0;
 	t.fd = 0;
+	t.pending = 0;
 	t.ready = false;
 	t.mapreduce = (doc) => doc;
 	t.schema = [];
 
 	Fs.mkdir(Path.join(t.directory, t.name + '1'), NOOP);
-	// Fs.mkdir(Path.join(t.directory, t.name + '2'), NOOP);
-	// Fs.mkdir(Path.join(t.directory, t.name + '3'), NOOP);
-	// Fs.mkdir(Path.join(t.directory, t.name + '4'), NOOP);
-	// Fs.mkdir(Path.join(t.directory, t.name + '5'), NOOP);
-	// Fs.mkdir(Path.join(t.directory, t.name + '6'), NOOP);
-	// Fs.mkdir(Path.join(t.directory, t.name + '7'), NOOP);
-	// Fs.mkdir(Path.join(t.directory, t.name + '8'), NOOP);
-	// Fs.mkdir(Path.join(t.directory, t.name + '9'), NOOP);
+	Fs.mkdir(Path.join(t.directory, t.name + '2'), NOOP);
+	Fs.mkdir(Path.join(t.directory, t.name + '3'), NOOP);
+	Fs.mkdir(Path.join(t.directory, t.name + '4'), NOOP);
+	Fs.mkdir(Path.join(t.directory, t.name + '5'), NOOP);
+	Fs.mkdir(Path.join(t.directory, t.name + '6'), NOOP);
+	Fs.mkdir(Path.join(t.directory, t.name + '7'), NOOP);
+	Fs.mkdir(Path.join(t.directory, t.name + '8'), NOOP);
+	Fs.mkdir(Path.join(t.directory, t.name + '9'), NOOP);
 
 	t.open();
 	t.nextforce = function() {
@@ -187,12 +203,16 @@ function Database(filename) {
 		t.nextforceid = null;
 
 		if (t.pendingalter) {
+
 			// updating of schema
-			t.alterforce(t.pendingalter);
+			if (!t.pending)
+				t.alterforce(t.pendingalter);
+
 			return;
 		}
 
 		if (t.ready) {
+
 			if (t.writer.ready && t.pendingwriter.length) {
 				var write = t.pendingwriter.splice(0);
 				for (var i = 0; i < write.length; i++) {
@@ -536,29 +556,29 @@ Database.prototype.next = function() {
 	}
 };
 
-Database.prototype.makedata = function(doc) {
+Database.prototype.makedata = function(dbschema, doc) {
 	var self = this;
 	var reduced = self.mapreduce(doc);
 	var filter = [];
 
-	for (var i = 0; i < self.schema.length; i++) {
-		var schema = self.schema[i];
+	for (var i = 0; i < dbschema.length; i++) {
+		var schema = dbschema[i];
 		var val = reduced[schema.name];
 		var type = typeof(val);
 		switch (schema.type) {
 			case TYPE_NUMBER:
 				if (type === 'string')
 					val = val.parseFloat();
-				filter.push(val == null ? null : val);
+				filter.push(val == null ? '' : val);
 				break;
 			case TYPE_STRING:
-				filter.push(val == null ? null : (val + ''));
+				filter.push(val == null ? '' : (val + ''));
 				break;
 			case TYPE_DATE:
-				filter.push(val == null ? null : val instanceof Date ? val.getTime() : type === 'string' ? val.parseDate().getTime() : 0);
+				filter.push(val == null ? '' : val instanceof Date ? val.getTime() : type === 'string' ? val.parseDate().getTime() : 0);
 				break;
 			case TYPE_BOOLEAN:
-				filter.push(val == null ? null : val ? 1 : 0);
+				filter.push(val == null ? '' : val ? 1 : 0);
 				break;
 		}
 	}
@@ -588,9 +608,9 @@ Database.prototype.makefilename = function(id) {
 	for (var i = 0; i < id.length; i++)
 		sum += id.charCodeAt(i);
 
-	id += '.file';
+	id += '.dbf';
 
-	return path + '1/' + id;
+	// return path + '1/' + id;
 
 	if (sum % 21 === 0)
 		return path + '9/' + id;
@@ -642,16 +662,21 @@ Database.prototype.loadphysical = function(modified, queue, callback) {
 
 Database.prototype.alterforce = function(schema) {
 
+	var buffer = Buffer.alloc(DATAOFFSET);
 	var self = this;
-	var buffer = Buffer.alloc(SCHEMASIZE);
-	var offset = 1;
-	var maxlength = 28;
+	var offset = 11;
+	var maxlength = 27;
 	var size = 30;
+	var newschema = [];
+
+	buffer.write('WebDB', 0, 'ascii');
+	buffer.writeInt16BE(1, 6);
 
 	self.ready = false;
+	self.pending++;
 
 	// Schema items count
-	buffer.writeInt8(schema.length);
+	buffer.writeInt8(schema.length, 10);
 
 	// Max. 100 fields
 	for (var i = 0; i < schema.length; i++) {
@@ -673,22 +698,107 @@ Database.prototype.alterforce = function(schema) {
 
 		// 30 bytes
 		var name = item.name.length > maxlength ? item.name.substring(0, maxlength) : item.name;
-		buffer.writeInt8(type, offset); // Type
-		buffer.writeInt8(item.sortindex || 0, offset + 1); // sortindex
-		buffer.writeInt8(name.length, offset + 2); // Name length
-		buffer.write(name, offset + 3, 'ascii'); // Name
-
+		buffer.writeInt8(type, offset);                     // Type
+		buffer.writeInt8(item.sortindex || 0, offset + 1);  // Sortindex
+		buffer.writeInt8(name.length, offset + 2);          // Name length
+		buffer.write(name, offset + 3, 'ascii');            // Name
 		offset += size;
+
+		newschema.push({ name: name, sortindex: item.sortindex, type: type });
 	}
 
-	// STOP DB
-	Fs.write(self.fd, buffer, 0, buffer.length, HEADERSIZE, function() {
-		// UPDATE OLD
-		// Continue
-		self.schema = schema;
-	});
+	var modified = false;
 
+	for (var i = 0; i < self.schema.length; i++) {
+		var a = self.schema[i];
+		var b = newschema[i];
+		if ((!a && b) || (a && !b) || (a.name !== b.name) || (a.type !== b.type)) {
+			modified = true;
+			break;
+		}
+	}
+
+	if (!modified) {
+		Fs.write(self.fd, buffer, 0, buffer.length, 0, function() {
+			self.pendingalter = null;
+			self.pending--;
+			self.readschema();
+		});
+		return self;
+	}
+
+	var filenametmp = self.filename + '-tmp';
+	var offset = 0;
+
+	Fs.open(filenametmp, 'w', function(err, fd) {
+		Fs.write(fd, buffer, 0, buffer.length, 0, function(err, size) {
+			offset += size;
+			streamer(self, 0, function(filter, next) {
+
+				for (var i = 0; i < filter.length; i++) {
+					var item = filter[i];
+					if (item.type !== FLAG_EMPTY) {
+						item.replication = 0;
+						item.data = self.makedata(newschema, item.file || item.filter);
+					}
+				}
+
+				var buffer = Buffer.alloc(PAGESIZE);
+				for (var i = 0; i < filter.length; i++) {
+					var item = filter[i];
+					self.writer.make(buffer, i * BLOCKSIZE, item);
+				}
+
+				Fs.write(fd, buffer, 0, buffer.length, offset, function(err, size) {
+					offset += size;
+					next();
+				});
+
+			}, function() {
+				Fs.close(fd, function() {
+					Fs.close(self.fd, function() {
+						// Rewrite DB
+						Fs.rename(filenametmp, self.filename, function(err) {
+							// DONE
+							self.pendingalter = null;
+							self.pending--;
+							self.open();
+						});
+					});
+				});
+			});
+		});
+	});
 };
+
+function streamer(database, cursor, processor, callback) {
+
+	var buffer = Buffer.alloc(PAGESIZE);
+	Fs.read(database.fd, buffer, 0, buffer.length, (cursor * PAGESIZE) + DATAOFFSET, function(err, size) {
+
+		if (!size) {
+			// end
+			callback();
+			return;
+		}
+
+		var filter = parsefilter(database.schema, readpage_streamer(buffer));
+
+		filter.wait(function(item, next) {
+			if (item.type === STORAGE_JSON) {
+				Fs.readFile(database.makefilename(item.id), function(err, buffer) {
+					item.file = buffer ? buffer.slice(STORAGEHEADERSIZE).toString('utf8').parseJSON(true) : EMPTYOBJECT;
+					next();
+				});
+			} else
+				next();
+		}, function() {
+			processor(filter, function(write) {
+				streamer(database, cursor + 1, processor, callback);
+			});
+		});
+	});
+}
 
 function Writer(database) {
 
@@ -746,6 +856,7 @@ function Writer(database) {
 			}
 
 			t.ready = true;
+			t.db.pending--;
 			t.db.next();
 			return;
 		}
@@ -773,7 +884,7 @@ function Writer(database) {
 				if (data.filename)
 					t.files.push({ builder: data, filter: filter });
 				else
-					filter.data = t.db.makedata(data.newbie);
+					filter.data = t.db.makedata(t.db.schema, data.newbie);
 
 				data.cursor = t.cursor;
 				data.count++;
@@ -807,7 +918,7 @@ function Writer(database) {
 					var builder = t.update[j];
 					builder.scanned++;
 
-					if (builder.findrule(filter.filter, builder.findparams)) {
+					if (builder.findrule(filter.filter, builder.findarg)) {
 
 						builder.count++;
 						builder.counter++;
@@ -821,7 +932,6 @@ function Writer(database) {
 						if (builder.type === 3) {
 							if (!is)
 								is = 1;
-
 							filter.type = FLAG_REMOVED;
 							filter.storage && chownfile(t.db.makefilename(filter.id), filter.type, NOOP);
 							continue;
@@ -858,7 +968,6 @@ function Writer(database) {
 				if (t.cancelable && stop === length && !t.insert.length)
 					t.cancel = true;
 			}
-
 		}
 
 		// @TODO: process new uploaded files
@@ -892,10 +1001,10 @@ function Writer(database) {
 
 			for (var j = 0; j < filters.length; j++) {
 				var filter = filters[j];
-				filter.builder.modifyrule(doc, filter.builder.modifyparams);
+				filter.builder.modifyrule(doc, filter.builder.modifyarg);
 			}
 
-			data.data = t.db.makedata(doc);
+			data.data = t.db.makedata(t.db.schema, doc);
 
 			switch (data.storage) {
 				case STORAGE_JSON:
@@ -936,8 +1045,8 @@ Writer.prototype.savefiles = function(modified) {
 			builder.filename.height = meta.height;
 			builder.filename.size = meta.size;
 			if (builder.modifyrule)
-				builder.modifyrule(builder.newbie, builder.modifyparams, builder.filename);
-			filter.data = self.db.makedata(builder.newbie);
+				builder.modifyrule(builder.newbie, builder.modifyarg, builder.filename);
+			filter.data = self.db.makedata(self.db.schema, builder.newbie);
 			filter.storage = builder.filename.storage;
 			next();
 		});
@@ -983,6 +1092,7 @@ Writer.prototype.open = function() {
 	self.ready = false;
 	self.pages = (self.size - DATAOFFSET) / PAGESIZE;
 	self.pagecount = 0;
+	self.db.pending++;
 
 	if (!self.update.length && self.insert.length && self.insertcursor)
 		self.cursor = self.insertcursor;
@@ -1081,6 +1191,7 @@ function Reader(database) {
 			t.items = {};
 			t.filters = [];
 			t.db.next();
+			t.db.pending--;
 			return;
 		}
 
@@ -1099,7 +1210,7 @@ function Reader(database) {
 					var builder = t.filters[j];
 					builder.scanned++;
 
-					if (builder.findrule(filter.filter, builder.findparams)) {
+					if (builder.findrule(filter.filter, builder.findarg)) {
 
 						builder.count++;
 
@@ -1107,7 +1218,11 @@ function Reader(database) {
 							continue;
 
 						builder.counter++;
-						builder.push(filter);
+
+						if (builder.scalarrule)
+							builder.scalarrule(filter.filter, builder.scalararg);
+						else
+							builder.push(filter);
 
 						if (t.cancelable && !builder.$sortname && builder.items.length === builder.$take) {
 							builder.cancel = true;
@@ -1153,6 +1268,7 @@ Reader.prototype.push = function(filters) {
 	self.ready = false;
 	self.pagecount = 0;
 	self.cancelable = true;
+	self.db.pending++;
 
 	for (var i = 0; i < filters.length; i++) {
 		var filter = filters[i];
@@ -1270,6 +1386,43 @@ function readpage_reader(instance) {
 	return filter;
 }
 
+function readpage_streamer(buffer) {
+
+	// buffer === Page
+	var filter = [];
+
+	for (var i = 0; i < ((PAGESIZE - 1) / BLOCKSIZE); i++)
+		filter.push({ type: 0, storage: 0, id: null, data: null });
+
+	var pagetype = buffer.readInt8(0);
+
+	// Page is empty
+	if (pagetype === 0)
+		return filter;
+
+	// Read documents
+	for (var i = 0; i < filter.length; i++) {
+		var offset = (i * BLOCKSIZE); // because 1 is type of page
+		var type = buffer.readInt8(offset);
+		var replication = buffer.readInt8(offset + 1);
+		var storage = buffer.readInt8(offset + 2);
+		var idsize = buffer.readInt8(offset + 3);
+		var datasize = buffer.readInt16BE(offset + 4);
+
+		var id = type ? buffer.toString('ascii', offset + 6, offset + idsize + 6) : null;
+		var data = type ? buffer.toString('utf8', offset + 56, offset + 56 + datasize) : null;
+		var meta = filter[i];
+
+		meta.replication = replication;
+		meta.storage = storage;
+		meta.type = type;
+		meta.id = id;
+		meta.data = data;
+	}
+
+	return filter;
+}
+
 function parsefilter(schema, filter) {
 
 	for (var i = 0; i < filter.length; i++) {
@@ -1285,18 +1438,16 @@ function parsefilter(schema, filter) {
 		for (var j = 0; j < schema.length; j++) {
 			var meta = schema[j];
 			var val = data[j];
-			if (val) {
-				switch (meta.type) {
-					case TYPE_NUMBER:
-						val = val ? +val : null;
-						break;
-					case TYPE_BOOLEAN:
-						val = val === '2' ? null : val === '1';
-						break;
-					case TYPE_DATE:
-						val = val ? new Date(+val) : null;
-						break;
-				}
+			switch (meta.type) {
+				case TYPE_NUMBER:
+					val = val == '' ? null : +val;
+					break;
+				case TYPE_BOOLEAN:
+					val = val === '2' ? null : val === '1';
+					break;
+				case TYPE_DATE:
+					val = val ? new Date(+val) : null;
+					break;
 			}
 			obj[meta.name] = val;
 		}
@@ -1310,12 +1461,11 @@ function parsefilter(schema, filter) {
 // var reader = new Reader();
 // var buffer = Buffer.alloc(PAGESIZE);
 
-var database = new Database('test.nosqlb');
+var database = new Database('test.db');
 // database.pendingreader.push(null);
 
 //database.modify({}).make('doc.id=="159234047ia61b"').modify('doc.kokot=true;doc.price=100');
 //database.remove().make('doc.id=="159234047ia61b"');
-
 
 // setTimeout(function() {
 // 	//database.find().make('doc.id==="160498002aa60b"').callback(console.log);
@@ -1328,13 +1478,23 @@ var database = new Database('test.nosqlb');
 
 setTimeout(function() {
 	// 160706001ts61b a 160706001aa61b
-	// database.find().make('true').fields('*').callback(console.log);
+
+	//database.find().make('true').take(5).callback(console.log);
+	// database.find().make('true').scalar('arg.max=Math.max(arg.max||0,item.price);arg.min=Math.min(arg.min||100,item.price)', {}).callback(console.log);
+	database.find().make('true').scalar('arg.max=Math.max(arg.max||0,item.price);arg.min=Math.min(arg.min||100,item.price)', {}).callback(console.log);
+
+	// database.alter([{ name: 'name', type: 'string' }, { name: 'date', type: 'date' }]);
+	// database.alter([{ name: 'price', type: 'number', sortindex: 3 }, { name: 'name', type: 'string' }, { name: 'date', type: 'date' }]);
 	// database.remove().make('doc.id=="160706001ts61b"').callback(console.log);
 	// database.read('160706001ts61b', function(err, meta) {
 	// 	console.log(meta);
 	// });
 	// database.insert({ id: UID(), name: GUID(30), price: U.random(10, 0.1), date: new Date(), body: GUID(50) }, '/Users/petersirka/Desktop/logo.png');
 	// database.insert({ id: UID(), name: GUID(30), price: U.random(10, 0.1), date: new Date(), body: GUID(50) });
+
+	// for (var i = 0; i < 10000; i++)
+	// 	database.insert({ id: UID(), name: GUID(30), price: U.random(10, 0.1), date: new Date(), body: GUID(50) });
+
 }, 200);
 
 // database.scalar('max', 'price').callback(console.log);
@@ -1357,9 +1517,6 @@ setTimeout(function() {
 // 	}, 1000);
 // 	database.insert({ id: UID(), name: GUID(30), price: U.random(10, 0.1), date: new Date(), body: GUID(50) }).callback(console.log);
 // }, 100);
-
-// for (var i = 0; i < 10000; i++)
-//  	database.insert({ id: UID(), name: GUID(30), price: U.random(10, 0.1), date: new Date(), body: GUID(50) });
 
 // console.log(reader.read(writer.make(buffer, 1, [{ name: 'price' }, { name: 'name' }], '157896001rl61b', { price: 100, name: 'Peter Širka' })));
 
