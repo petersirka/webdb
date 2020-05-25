@@ -37,7 +37,7 @@ function Writer(database) {
 				builder.scanned = t.scanned;
 				builder.tsfilter = now - t.ts;
 				builder.pagecount = t.pagecount;
-				builder.$callback(null, builder);
+				builder.$callback && builder.$callback(null, builder);
 			}
 
 			if (t.update.length)
@@ -53,7 +53,7 @@ function Writer(database) {
 					builder.scanned = t.scanned;
 					builder.tsfilter = now - t.ts;
 					builder.pagecount = t.pagecount;
-					builder.$callback(null, builder);
+					builder.$callback && builder.$callback(null, builder);
 				}
 			}
 
